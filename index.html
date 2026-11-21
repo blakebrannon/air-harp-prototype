@@ -1,0 +1,958 @@
+<!--
+Air Harp — a browser prototype for AskWolfie
+Copyright (c) 2026 Blake Brannon
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+How to embed this page in AskWolfie (or any host page):
+
+  1. Serve this file over HTTPS. Camera access is only available in a
+     secure context (HTTPS or localhost).
+
+  2. Embed with an iframe that grants camera and autoplay permissions:
+
+       <iframe
+         src="https://blakebrannon.github.io/air-harp-prototype/"
+         allow="camera; autoplay"
+         style="width:100%; height:100%; border:0;"
+         title="Air Harp"
+       ></iframe>
+
+  3. The parent page should also be served over HTTPS. If the iframe is
+     cross-origin, the allow attribute above is required; without it the
+     browser will block getUserMedia.
+
+  4. There is no build step. This is a single self-contained HTML file.
+
+Hand tracking uses Google MediaPipe Tasks Vision (Apache-2.0) loaded from
+jsDelivr. The plucked-string tone is an original Karplus–Strong implementation
+written for this file; it does not include code from PlayTheNote, Fili di luce,
+Jalalkhan, or other third-party harp demos.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Air Harp</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0a12'/%3E%3Cpath d='M20 12v40M32 16v32M44 12v40' fill='none' stroke='%23f0c36a' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #07060c;
+      --panel: rgba(12, 10, 20, 0.72);
+      --line: rgba(240, 220, 180, 0.18);
+      --text: #f4efe6;
+      --muted: #b7b0a4;
+      --gold: #f0c36a;
+      --teal: #7ee0d6;
+      --danger: #ff8a7a;
+      --ok: #8ee0a8;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+      min-height: 100svh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      padding-top: max(10px, env(safe-area-inset-top));
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      z-index: 2;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .brand h1 {
+      margin: 0;
+      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      font-weight: 600;
+      font-size: 1.25rem;
+      letter-spacing: 0.02em;
+    }
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+    .status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.03);
+      white-space: nowrap;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #5a5660;
+      box-shadow: 0 0 0 3px rgba(90, 86, 96, 0.2);
+    }
+    .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(142, 224, 168, 0.2); }
+    .dot.warn { background: var(--gold); box-shadow: 0 0 0 3px rgba(240, 195, 106, 0.2); }
+    .dot.off { background: #5a5660; }
+    .dot.err { background: var(--danger); box-shadow: 0 0 0 3px rgba(255, 138, 122, 0.2); }
+    .stage-wrap {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      padding: 10px;
+      background:
+        radial-gradient(ellipse at 50% 30%, rgba(80, 50, 20, 0.18), transparent 55%),
+        radial-gradient(ellipse at 50% 100%, rgba(20, 40, 50, 0.3), transparent 50%),
+        var(--bg);
+    }
+    #stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      max-width: 100%;
+      max-height: 100%;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--line);
+      background: #0b0a12;
+      touch-action: none;
+    }
+    #cam {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #view {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+    footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px 16px;
+      padding: 10px 16px;
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+    }
+    .howto {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.4;
+      max-width: 52rem;
+    }
+    .howto strong { color: var(--text); font-weight: 600; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.85rem;
+      padding: 8px 14px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    button:hover { background: rgba(255, 255, 255, 0.08); }
+    button:active { transform: translateY(1px); }
+    button.primary {
+      background: linear-gradient(180deg, #f3d48a, #d7a84a);
+      color: #2a1c06;
+      border-color: transparent;
+      font-weight: 600;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .toast {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      background: rgba(12, 10, 20, 0.9);
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; }
+    @media (max-width: 720px) {
+      .howto { font-size: 0.72rem; }
+      .brand h1 { font-size: 1.05rem; }
+      header, footer { padding-left: 12px; padding-right: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Air Harp</h1>
+      <p>A prototype for AskWolfie</p>
+    </div>
+    <div class="status" aria-live="polite">
+      <span class="pill"><span class="dot off" id="dot-camera"></span><span id="lbl-camera">Camera off</span></span>
+      <span class="pill"><span class="dot off" id="dot-hands"></span><span id="lbl-hands">No hands</span></span>
+      <span class="pill"><span class="dot off" id="dot-audio"></span><span id="lbl-audio">Sound locked</span></span>
+      <span class="pill"><span id="lbl-strings">0 / 12 strings</span></span>
+    </div>
+  </header>
+
+  <div class="stage-wrap">
+    <div id="stage">
+      <video id="cam" playsinline muted autoplay></video>
+      <canvas id="view"></canvas>
+      <div class="toast" id="toast" role="status"></div>
+    </div>
+  </div>
+
+  <footer>
+    <p class="howto">
+      <strong>With a camera:</strong> pinch thumb and index on both hands, pull apart to draw a glowing string, then release to set it.
+      Sweep a fingertip across a string to pluck it. Length sets the pitch — longer is lower, shorter is higher, always on a pentatonic scale.
+      <strong>Without a camera:</strong> click or tap and drag to draw a string; move across a string to pluck.
+    </p>
+    <div class="actions">
+      <button type="button" class="primary" id="btn-camera">Start camera</button>
+      <button type="button" id="btn-sound">Test sound</button>
+      <button type="button" id="btn-undo">Undo</button>
+      <button type="button" id="btn-clear">Clear</button>
+    </div>
+  </footer>
+
+  <script type="module">
+    const MAX_STRINGS = 12;
+    const DETECT_FPS = 30;
+    const MIN_STRING_PX = 48;
+    const PLUCK_COOLDOWN_MS = 280;
+
+    // C major pentatonic across four octaves. Longer strings map to lower notes.
+    const NOTE_NAMES = [
+      "C3", "D3", "E3", "G3", "A3",
+      "C4", "D4", "E4", "G4", "A4",
+      "C5", "D5", "E5", "G5", "A5",
+      "C6", "D6", "E6"
+    ];
+    const NOTE_FREQS = NOTE_NAMES.map((name) => {
+      const map = { C: 0, D: 2, E: 4, G: 7, A: 9 };
+      const pc = map[name[0]];
+      const oct = Number(name.slice(1));
+      return 440 * Math.pow(2, (pc + (oct - 4) * 12 - 9) / 12);
+    });
+
+    const MP_VERSION = "0.10.21";
+    const MP_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
+    const MP_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+    const video = document.getElementById("cam");
+    const canvas = document.getElementById("view");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const stage = document.getElementById("stage");
+    const toastEl = document.getElementById("toast");
+
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "true");
+    video.muted = true;
+    video.autoplay = true;
+    video.playsInline = true;
+
+    const AirHarp = {
+      strings: [],
+      particles: [],
+      drawing: null,
+      pluckCount: 0,
+      lastPluckAt: 0,
+      lastAudioNodes: 0,
+      modelLoaded: false,
+      modelError: null,
+      loopRunning: false,
+      cameraState: "off",
+      handsDetected: 0,
+      audioState: "locked",
+      ready: false,
+      frameCount: 0
+    };
+    window.AirHarp = AirHarp;
+
+    let audioCtx = null;
+    let masterGain = null;
+    let landmarker = null;
+    let lastDetect = 0;
+    let lastPointer = null;
+    let toastTimer = 0;
+    let pointerId = null;
+    let hands = [];
+
+    function showToast(msg) {
+      toastEl.textContent = msg;
+      toastEl.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1800);
+    }
+
+    function setDot(kind, state, label) {
+      const dot = document.getElementById("dot-" + kind);
+      const lbl = document.getElementById("lbl-" + kind);
+      if (dot) dot.className = "dot " + state;
+      if (lbl) lbl.textContent = label;
+    }
+
+    function refreshStatus() {
+      document.getElementById("lbl-strings").textContent =
+        `${AirHarp.strings.length} / ${MAX_STRINGS} strings`;
+      const cam = AirHarp.cameraState;
+      if (cam === "on") setDot("camera", "on", "Camera on");
+      else if (cam === "starting") setDot("camera", "warn", "Starting camera…");
+      else if (cam === "error") setDot("camera", "err", "Camera blocked");
+      else setDot("camera", "off", "Camera off");
+
+      if (AirHarp.cameraState !== "on") {
+        setDot("hands", "off", "Mouse / touch mode");
+      } else if (AirHarp.handsDetected === 0) {
+        setDot("hands", "warn", "No hands");
+      } else {
+        setDot("hands", "on", AirHarp.handsDetected === 1 ? "1 hand" : `${AirHarp.handsDetected} hands`);
+      }
+
+      if (AirHarp.audioState === "ready") setDot("audio", "on", "Sound ready");
+      else if (AirHarp.audioState === "error") setDot("audio", "err", "Sound error");
+      else setDot("audio", "off", "Sound locked");
+    }
+
+    function unlockAudio() {
+      if (audioCtx && audioCtx.state === "running") {
+        AirHarp.audioState = "ready";
+        refreshStatus();
+        return audioCtx;
+      }
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) throw new Error("Web Audio is not available");
+        if (!audioCtx) {
+          audioCtx = new Ctx();
+          masterGain = audioCtx.createGain();
+          masterGain.gain.value = 0.7;
+          masterGain.connect(audioCtx.destination);
+        }
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        AirHarp.audioState = "ready";
+      } catch (err) {
+        AirHarp.audioState = "error";
+        console.warn("Audio unlock failed:", err);
+      }
+      refreshStatus();
+      return audioCtx;
+    }
+
+    // Original Karplus–Strong plucked string. A delay line the length of one
+    // period is filled with a short, windowed noise burst, then recirculated
+    // through a two-point averaging filter with slight damping. Higher notes
+    // decay a little faster, which keeps the harp from getting shrill.
+    function renderKarplusStrong(freq, seconds) {
+      const rate = audioCtx.sampleRate;
+      const period = Math.max(2, Math.round(rate / freq));
+      const n = Math.ceil(seconds * rate);
+      const buffer = audioCtx.createBuffer(1, n, rate);
+      const out = buffer.getChannelData(0);
+      const line = new Float32Array(period);
+      const pluckAt = 0.18;
+      for (let i = 0; i < period; i++) {
+        const t = i / period;
+        const window = t < pluckAt ? Math.sin((t / pluckAt) * Math.PI) : 0;
+        line[i] = (Math.random() * 2 - 1) * window;
+      }
+      const brightness = Math.min(0.999, 0.991 + (180 / freq) * 0.004);
+      let idx = 0;
+      let previous = 0;
+      for (let i = 0; i < n; i++) {
+        const current = line[idx];
+        const filtered = brightness * 0.5 * (current + previous);
+        previous = current;
+        line[idx] = filtered;
+        out[i] = current;
+        idx++;
+        if (idx >= period) idx = 0;
+      }
+      const fade = Math.min(Math.floor(rate * 0.12), Math.floor(n / 4));
+      for (let i = 0; i < fade; i++) out[n - 1 - i] *= i / fade;
+      return buffer;
+    }
+
+    function playPluck(freq, velocity) {
+      const ctxAudio = unlockAudio();
+      if (!ctxAudio || ctxAudio.state === "suspended") return false;
+      const vel = Math.max(0.2, Math.min(1, velocity || 0.85));
+      const seconds = 2.2 + (1 - Math.min(freq / 800, 1)) * 1.4;
+      const source = ctxAudio.createBufferSource();
+      source.buffer = renderKarplusStrong(freq, seconds);
+      const filter = ctxAudio.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 1800 + vel * 2200;
+      filter.Q.value = 0.7;
+      const gain = ctxAudio.createGain();
+      const now = ctxAudio.currentTime;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.55 * vel, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + seconds);
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(masterGain);
+      source.start(now);
+      source.stop(now + seconds);
+      AirHarp.lastAudioNodes += 1;
+      return true;
+    }
+
+    function stringLength(s) {
+      return Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+    }
+
+    function lengthToNote(len) {
+      const w = canvas.width || 1280;
+      const h = canvas.height || 720;
+      // A nearly full-height string should land near the bottom of the scale.
+      const maxL = Math.max(h * 0.95, w * 0.6);
+      const minL = Math.max(MIN_STRING_PX, Math.min(w, h) * 0.08);
+      const t = (len - minL) / Math.max(1, maxL - minL);
+      const clamped = Math.max(0, Math.min(1, t));
+      const idx = Math.round((1 - clamped) * (NOTE_FREQS.length - 1));
+      return { name: NOTE_NAMES[idx], freq: NOTE_FREQS[idx] };
+    }
+
+    function hueForFreq(freq) {
+      const lo = NOTE_FREQS[0];
+      const hi = NOTE_FREQS[NOTE_FREQS.length - 1];
+      const t = (Math.log(freq) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
+      return 48 - Math.max(0, Math.min(1, t)) * 155;
+    }
+
+    function colorFor(freq, alpha) {
+      return `hsla(${hueForFreq(freq)}, 85%, 68%, ${alpha})`;
+    }
+
+    function commitString(x1, y1, x2, y2) {
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      if (len < MIN_STRING_PX) return null;
+      if (AirHarp.strings.length >= MAX_STRINGS) {
+        showToast("String limit reached — undo or clear to add more");
+        return null;
+      }
+      const note = lengthToNote(len);
+      const s = {
+        x1, y1, x2, y2,
+        freq: note.freq,
+        name: note.name,
+        pluckTime: -9999,
+        pluckAmp: 0
+      };
+      AirHarp.strings.push(s);
+      refreshStatus();
+      return s;
+    }
+
+    function spawnSparks(s, velocity) {
+      const dx = s.x2 - s.x1;
+      const dy = s.y2 - s.y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const nx = -uy;
+      const ny = ux;
+      const count = 10 + Math.round(velocity * 8);
+      for (let i = 0; i < count; i++) {
+        const u = Math.random();
+        const along = (Math.random() * 2 - 1) * (80 + velocity * 120);
+        const out = (Math.random() * 2 - 1) * (40 + velocity * 60);
+        AirHarp.particles.push({
+          x: s.x1 + dx * u,
+          y: s.y1 + dy * u,
+          vx: ux * along + nx * out,
+          vy: uy * along + ny * out,
+          life: 0.45 + Math.random() * 0.4,
+          age: 0,
+          size: 1.2 + Math.random() * 2.2,
+          hue: hueForFreq(s.freq)
+        });
+      }
+    }
+
+    function pluckString(s, velocity) {
+      const now = performance.now();
+      if (now - s.pluckTime < PLUCK_COOLDOWN_MS) return false;
+      s.pluckTime = now;
+      s.pluckAmp = 10 + Math.max(0.25, Math.min(1, velocity || 0.8)) * 18;
+      AirHarp.pluckCount += 1;
+      AirHarp.lastPluckAt = now;
+      spawnSparks(s, Math.max(0.3, Math.min(1, velocity || 0.8)));
+      playPluck(s.freq, velocity);
+      return true;
+    }
+
+    function orient(ax, ay, bx, by, cx, cy) {
+      return (by - ay) * (cx - ax) - (bx - ax) * (cy - ay);
+    }
+
+    function onSegment(ax, ay, bx, by, cx, cy, eps) {
+      return (
+        cx >= Math.min(ax, bx) - eps &&
+        cx <= Math.max(ax, bx) + eps &&
+        cy >= Math.min(ay, by) - eps &&
+        cy <= Math.max(ay, by) + eps
+      );
+    }
+
+    function segmentsCross(a, b, c, d) {
+      const o1 = orient(a.x, a.y, b.x, b.y, c.x, c.y);
+      const o2 = orient(a.x, a.y, b.x, b.y, d.x, d.y);
+      const o3 = orient(c.x, c.y, d.x, d.y, a.x, a.y);
+      const o4 = orient(c.x, c.y, d.x, d.y, b.x, b.y);
+      if (o1 * o2 < 0 && o3 * o4 < 0) return true;
+      const eps = 0.75;
+      if (Math.abs(o1) < 1e-6 && onSegment(a.x, a.y, b.x, b.y, c.x, c.y, eps)) return true;
+      if (Math.abs(o2) < 1e-6 && onSegment(a.x, a.y, b.x, b.y, d.x, d.y, eps)) return true;
+      if (Math.abs(o3) < 1e-6 && onSegment(c.x, c.y, d.x, d.y, a.x, a.y, eps)) return true;
+      if (Math.abs(o4) < 1e-6 && onSegment(c.x, c.y, d.x, d.y, b.x, b.y, eps)) return true;
+      return false;
+    }
+
+    function pluckCrossings(from, to, speed) {
+      if (!from || !to) return;
+      const travel = Math.hypot(to.x - from.x, to.y - from.y);
+      if (travel < 1.5) return;
+      const vel = Math.max(0.3, Math.min(1, (speed || travel) / 40));
+      for (const s of AirHarp.strings) {
+        if (segmentsCross(from, to, { x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 })) {
+          pluckString(s, vel);
+        }
+      }
+    }
+
+    function canvasPoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width));
+      const y = (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height));
+      return { x, y };
+    }
+
+    function layout() {
+      const wrap = stage.parentElement.getBoundingClientRect();
+      const vw = video.videoWidth || 1280;
+      const vh = video.videoHeight || 720;
+      const pad = 0;
+      const maxW = Math.max(160, wrap.width - pad);
+      const maxH = Math.max(160, wrap.height - pad);
+      const scale = Math.min(maxW / vw, maxH / vh);
+      const cssW = Math.round(vw * scale);
+      const cssH = Math.round(vh * scale);
+      stage.style.width = cssW + "px";
+      stage.style.height = cssH + "px";
+      if (canvas.width !== vw || canvas.height !== vh) {
+        canvas.width = vw;
+        canvas.height = vh;
+      }
+    }
+
+    function stringCurve(s, now) {
+      const dx = s.x2 - s.x1;
+      const dy = s.y2 - s.y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const elapsed = (now - s.pluckTime) / 1000;
+      const amp = elapsed < 0 ? 0 : s.pluckAmp * Math.exp(-elapsed * 5.5);
+      const waves = 3 + (s.name.charCodeAt(0) % 3);
+      const segs = Math.max(24, Math.min(56, Math.round(len / 18)));
+      const pts = [];
+      for (let i = 0; i <= segs; i++) {
+        const u = i / segs;
+        const envelope = Math.sin(u * Math.PI);
+        const wave = amp * envelope * Math.sin(u * waves * Math.PI + elapsed * 28);
+        pts.push({ x: s.x1 + dx * u + nx * wave, y: s.y1 + dy * u + ny * wave });
+      }
+      return pts;
+    }
+
+    function strokeLine(pts, color, width, blur) {
+      if (!pts.length) return;
+      ctx.save();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = blur;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawEndpoint(x, y, color, r) {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 16;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function render(now) {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.fillStyle = "#0b0a12";
+      ctx.fillRect(0, 0, w, h);
+
+      if (video.readyState >= 2 && AirHarp.cameraState === "on") {
+        ctx.save();
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, w, h);
+        ctx.restore();
+        ctx.fillStyle = "rgba(6, 5, 12, 0.32)";
+        ctx.fillRect(0, 0, w, h);
+      } else {
+        const g = ctx.createRadialGradient(w * 0.5, h * 0.4, 20, w * 0.5, h * 0.5, Math.max(w, h) * 0.7);
+        g.addColorStop(0, "#1a1528");
+        g.addColorStop(1, "#0b0a12");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      // Soft vignette
+      const vig = ctx.createRadialGradient(w * 0.5, h * 0.5, Math.min(w, h) * 0.25, w * 0.5, h * 0.5, Math.max(w, h) * 0.7);
+      vig.addColorStop(0, "rgba(0,0,0,0)");
+      vig.addColorStop(1, "rgba(0,0,0,0.35)");
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, w, h);
+
+      for (const s of AirHarp.strings) {
+        const pts = stringCurve(s, now);
+        strokeLine(pts, colorFor(s.freq, 0.22), 14, 28);
+        strokeLine(pts, colorFor(s.freq, 0.7), 4.5, 18);
+        strokeLine(pts, "rgba(255,255,255,0.92)", 1.25, 4);
+        drawEndpoint(s.x1, s.y1, colorFor(s.freq, 0.9), 3.2);
+        drawEndpoint(s.x2, s.y2, colorFor(s.freq, 0.9), 3.2);
+      }
+
+      if (AirHarp.drawing) {
+        const d = AirHarp.drawing;
+        const note = lengthToNote(Math.hypot(d.x2 - d.x1, d.y2 - d.y1));
+        const pts = [{ x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 }];
+        const pulse = 0.55 + 0.45 * Math.sin(now / 180);
+        strokeLine(pts, colorFor(note.freq, 0.2 * pulse + 0.15), 16, 30);
+        strokeLine(pts, colorFor(note.freq, 0.85), 5, 20);
+        strokeLine(pts, "rgba(255,255,255,0.95)", 1.4, 6);
+        drawEndpoint(d.x1, d.y1, "#fff6d8", 5);
+        drawEndpoint(d.x2, d.y2, "#fff6d8", 5);
+        ctx.save();
+        ctx.fillStyle = "rgba(244,239,230,0.85)";
+        ctx.font = "16px Georgia, serif";
+        ctx.textAlign = "center";
+        ctx.fillText(note.name, (d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2 - 14);
+        ctx.restore();
+      }
+
+      for (const hand of hands) {
+        if (hand.pinched) {
+          drawEndpoint(hand.mid.x, hand.mid.y, "rgba(255, 244, 200, 0.95)", 7);
+          strokeLine([
+            { x: hand.thumb.x, y: hand.thumb.y },
+            { x: hand.index.x, y: hand.index.y }
+          ], "rgba(255,244,200,0.7)", 2, 10);
+        } else {
+          drawEndpoint(hand.index.x, hand.index.y, "rgba(126, 224, 214, 0.8)", 4);
+        }
+      }
+
+      const dt = Math.min(0.05, (now - (render.lastNow || now)) / 1000);
+      render.lastNow = now;
+      for (let i = AirHarp.particles.length - 1; i >= 0; i--) {
+        const p = AirHarp.particles[i];
+        p.age += dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vx *= 0.92;
+        p.vy *= 0.92;
+        const life = 1 - p.age / p.life;
+        if (life <= 0) {
+          AirHarp.particles.splice(i, 1);
+          continue;
+        }
+        ctx.save();
+        ctx.fillStyle = `hsla(${p.hue}, 90%, 75%, ${life})`;
+        ctx.shadowColor = `hsla(${p.hue}, 90%, 70%, ${life})`;
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * (0.6 + life), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function pinchFromLandmarks(lm, w, h) {
+      const pt = (i) => ({ x: (1 - lm[i].x) * w, y: lm[i].y * h });
+      const thumb = pt(4);
+      const index = pt(8);
+      const wrist = pt(0);
+      const middle = pt(12);
+      const scale = Math.hypot(wrist.x - middle.x, wrist.y - middle.y) || (0.2 * w);
+      const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+      return {
+        pinched: dist < scale * 0.38,
+        mid: { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 },
+        thumb,
+        index
+      };
+    }
+
+    const prevIndexBySlot = [];
+    function detectHandsWrapped(now) {
+      if (!landmarker || video.readyState < 2) return;
+      const results = landmarker.detectForVideo(video, now);
+      const w = canvas.width;
+      const h = canvas.height;
+      const next = [];
+      const landmarks = results.landmarks || [];
+      AirHarp.handsDetected = landmarks.length;
+      for (let i = 0; i < landmarks.length; i++) {
+        const hand = pinchFromLandmarks(landmarks[i], w, h);
+        const prev = prevIndexBySlot[i];
+        if (!hand.pinched && prev) {
+          const travel = Math.hypot(hand.index.x - prev.x, hand.index.y - prev.y);
+          pluckCrossings(prev, hand.index, travel);
+        }
+        prevIndexBySlot[i] = { x: hand.index.x, y: hand.index.y };
+        next.push(hand);
+      }
+      prevIndexBySlot.length = landmarks.length;
+      hands = next;
+
+      const pinched = hands.filter((hnd) => hnd.pinched);
+      if (pinched.length >= 2) {
+        const a = pinched[0].mid;
+        const b = pinched[1].mid;
+        AirHarp.drawing = { x1: a.x, y1: a.y, x2: b.x, y2: b.y, fromHands: true };
+      } else if (AirHarp.drawing && AirHarp.drawing.fromHands) {
+        const d = AirHarp.drawing;
+        AirHarp.drawing = null;
+        commitString(d.x1, d.y1, d.x2, d.y2);
+      }
+      refreshStatus();
+    }
+
+    function loop(now) {
+      requestAnimationFrame(loop);
+      AirHarp.loopRunning = true;
+      AirHarp.frameCount += 1;
+      if (now - lastDetect >= 1000 / DETECT_FPS) {
+        lastDetect = now;
+        if (landmarker && AirHarp.cameraState === "on") {
+          try { detectHandsWrapped(now); }
+          catch (err) { console.warn("Hand detect failed:", err); }
+        }
+      }
+      render(now);
+    }
+
+    async function loadModel() {
+      try {
+        const { HandLandmarker, FilesetResolver } = await import(
+          `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/+esm`
+        );
+        const vision = await FilesetResolver.forVisionTasks(MP_WASM);
+        const options = (delegate) => ({
+          baseOptions: { modelAssetPath: MP_MODEL, delegate },
+          runningMode: "VIDEO",
+          numHands: 2
+        });
+        try {
+          landmarker = await HandLandmarker.createFromOptions(vision, options("GPU"));
+        } catch (gpuErr) {
+          console.warn("GPU hand tracking unavailable, falling back to CPU:", gpuErr);
+          landmarker = await HandLandmarker.createFromOptions(vision, options("CPU"));
+        }
+        AirHarp.modelLoaded = true;
+        AirHarp.modelError = null;
+      } catch (err) {
+        AirHarp.modelLoaded = false;
+        AirHarp.modelError = String(err && err.message ? err.message : err);
+        console.warn("Hand tracker failed to load. Mouse and touch drawing still work.", err);
+        showToast("Hand tracker unavailable — use mouse or touch");
+      }
+    }
+
+    async function startCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        AirHarp.cameraState = "error";
+        refreshStatus();
+        showToast("This browser cannot open the camera");
+        return;
+      }
+      AirHarp.cameraState = "starting";
+      refreshStatus();
+      unlockAudio();
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: "user",
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+        video.srcObject = stream;
+        await video.play();
+        AirHarp.cameraState = "on";
+        document.getElementById("btn-camera").textContent = "Camera on";
+        layout();
+        refreshStatus();
+      } catch (err) {
+        AirHarp.cameraState = "error";
+        refreshStatus();
+        showToast("Camera permission was declined — you can still draw with a mouse");
+        console.warn("getUserMedia failed:", err);
+      }
+    }
+
+    canvas.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      unlockAudio();
+      canvas.setPointerCapture(event.pointerId);
+      pointerId = event.pointerId;
+      const p = canvasPoint(event);
+      lastPointer = p;
+      AirHarp.drawing = { x1: p.x, y1: p.y, x2: p.x, y2: p.y, fromHands: false };
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+      const p = canvasPoint(event);
+      if (lastPointer && !(AirHarp.drawing && AirHarp.drawing.fromHands)) {
+        const travel = Math.hypot(p.x - lastPointer.x, p.y - lastPointer.y);
+        pluckCrossings(lastPointer, p, travel);
+      }
+      if (AirHarp.drawing && !AirHarp.drawing.fromHands && (pointerId === event.pointerId || event.buttons)) {
+        AirHarp.drawing.x2 = p.x;
+        AirHarp.drawing.y2 = p.y;
+      }
+      lastPointer = p;
+    });
+
+    function endPointerDraw(event) {
+      if (AirHarp.drawing && !AirHarp.drawing.fromHands) {
+        const d = AirHarp.drawing;
+        AirHarp.drawing = null;
+        commitString(d.x1, d.y1, d.x2, d.y2);
+      }
+      if (event) lastPointer = canvasPoint(event);
+      pointerId = null;
+    }
+
+    canvas.addEventListener("pointerup", endPointerDraw);
+    canvas.addEventListener("pointercancel", endPointerDraw);
+    canvas.addEventListener("pointerleave", (event) => {
+      if (pointerId === event.pointerId) endPointerDraw(event);
+      else lastPointer = null;
+    });
+
+    document.getElementById("btn-camera").addEventListener("click", startCamera);
+    document.getElementById("btn-sound").addEventListener("click", () => {
+      unlockAudio();
+      const mid = [NOTE_FREQS[6], NOTE_FREQS[8], NOTE_FREQS[10]];
+      mid.forEach((freq, i) => setTimeout(() => playPluck(freq, 0.7), i * 180));
+      showToast("Test pluck");
+    });
+    document.getElementById("btn-undo").addEventListener("click", () => {
+      unlockAudio();
+      AirHarp.strings.pop();
+      refreshStatus();
+    });
+    document.getElementById("btn-clear").addEventListener("click", () => {
+      unlockAudio();
+      AirHarp.strings = [];
+      AirHarp.particles = [];
+      refreshStatus();
+    });
+
+    window.addEventListener("resize", layout);
+    window.addEventListener("orientationchange", () => setTimeout(layout, 200));
+    video.addEventListener("loadedmetadata", layout);
+
+    layout();
+    refreshStatus();
+    requestAnimationFrame(loop);
+    AirHarp.ready = true;
+    loadModel();
+  </script>
+</body>
+</html>
