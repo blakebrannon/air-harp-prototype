@@ -6,9 +6,15 @@ There is no build step. Open `index.html` over HTTPS (or `localhost`) in a curre
 
 ## Live demo
 
-If GitHub Pages is enabled for this repository:
+Once GitHub Pages is on, the prototype will be at:
 
 https://blakebrannon.github.io/air-harp-prototype/
+
+The files are already on the `main` branch. Pages still has to be turned on once in the repository settings (the GitHub API token used here cannot create a Pages site):
+
+1. Open https://github.com/blakebrannon/air-harp-prototype/settings/pages
+2. Under **Build and deployment**, set Source to **GitHub Actions**, or to **Deploy from a branch** with branch `main` and folder `/ (root)`.
+3. Wait a minute, then open the URL above. After that, phone testing and AskWolfie embedding will work over HTTPS.
 
 ## How to use
 
